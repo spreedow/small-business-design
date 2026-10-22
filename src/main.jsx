@@ -4,7 +4,7 @@ import "./index.css";
 import App from "./App.jsx";
 import Admin from "./Admin.jsx";
 
-const isAdminPage = window.location.pathname === "/admin";
+const isAdminPage = window.location.pathname.startsWith("/admin");
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
