@@ -2300,3 +2300,115 @@ section[id] {
     transform: none;
   }
 }
+/* === Admin image manager polish (optional) === */
+.admin-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.admin-image-card {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+  cursor: grab;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  border: 1px solid #d7dfd4;
+}
+
+.admin-image-card:hover {
+  transform: translateY(-2px);
+}
+
+.admin-image-card.is-cover {
+  border: 2px solid #315c42;
+  background: #f2f7f3;
+  box-shadow: 0 4px 12px rgba(49, 92, 66, 0.15);
+}
+
+.admin-image-card.is-dragging {
+  opacity: 0.4;
+}
+
+.admin-image-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(36, 55, 43, 0.75);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.admin-image-card.is-cover .admin-image-badge {
+  background: #315c42;
+}
+
+.admin-image-preview {
+  width: 100%;
+  height: 130px;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+
+.admin-image-actions {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #fafaf7;
+  border-top: 1px solid #e2e8df;
+}
+
+.admin-image-card.is-cover .admin-image-actions {
+  background: #e8efe9;
+}
+
+.admin-image-row {
+  display: flex;
+  gap: 4px;
+}
+
+.admin-image-small-btn {
+  flex: 1;
+  padding: 4px;
+  font-size: 12px;
+}
+
+.admin-image-cover-btn {
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #315c42;
+  border: 1px solid #315c42;
+  background: #fff;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.admin-image-remove-btn {
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid #f0caca;
+  border-radius: 8px;
+  background: #fff7f7;
+  color: #a42c2c;
+  cursor: pointer;
+}
+
+.admin-image-remove-all {
+  border: 1px solid #f0caca;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: #fff7f7;
+  color: #a42c2c;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}

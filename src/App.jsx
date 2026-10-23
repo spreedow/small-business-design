@@ -11,17 +11,40 @@ const categories = [
   "Word Documents",
 ];
 
-function ProjectImageGallery({ project }) {
-  const [activeImageIndex, setActiveImageIndex] = useState(0);
-  const [isViewerOpen, setIsViewerOpen] = useState(false);
-  const closeButtonRef = useRef(null);
+const VIDEO_EXTENSIONS = [".mp4", ".webm", ".ogg", ".mov", ".m4v"];
 
+function isVideoUrl(url) {
+  if (typeof url !== "string" || !url.trim()) return false;
+
+  const cleanUrl = url.trim().split("#")[0].split("?")[0].toLowerCase();
+  return VIDEO_EXTENSIONS.some((ext) => cleanUrl.endsWith(ext));
+}
+
+function getVideoMimeType(url) {
+  const cleanUrl = typeof url === "string" ? url.trim().split("#")[0].split("?")[0].toLowerCase() : "";
+
+  if (cleanUrl.endsWith(".webm")) return "video/webm";
+  if (cleanUrl.endsWith(".ogg") || cleanUrl.endsWith(".ogv")) return "video/ogg";
+  if (cleanUrl.endsWith(".mov")) return "video/quicktime";
+  return "video/mp4";
+}
+
+function ProjectImageGallery({ project }) {
   const images =
     project.images?.length > 0
       ? project.images
       : project.image
         ? [project.image]
         : [];
+
+  const coverIndex = Math.max(0, images.findIndex((url) => !isVideoUrl(url)));
+  const [activeImageIndex, setActiveImageIndex] = useState(coverIndex);
+  const [isViewerOpen, setIsViewerOpen] = useState(false);
+  const closeButtonRef = useRef(null);
+
+  useEffect(() => {
+    setActiveImageIndex(Math.max(0, images.findIndex((url) => !isVideoUrl(url))));
+  }, [project.id]);
 
   useEffect(() => {
     if (!isViewerOpen) return;
@@ -31,8 +54,21 @@ function ProjectImageGallery({ project }) {
     closeButtonRef.current?.focus();
 
     function handleKeyDown(event) {
+      const targetTag = String(event.target?.tagName || "").toLowerCase();
+      const isVideoTarget =
+        targetTag === "video" ||
+        (typeof event.composedPath === "function" &&
+          event.composedPath().some((node) => {
+            const nodeTag = String(node?.tagName || "").toLowerCase();
+            return nodeTag === "video";
+          }));
+
       if (event.key === "Escape") {
         setIsViewerOpen(false);
+        return;
+      }
+
+      if (isVideoTarget) {
         return;
       }
 
@@ -41,9 +77,7 @@ function ProjectImageGallery({ project }) {
         setActiveImageIndex((current) =>
           current === 0 ? images.length - 1 : current - 1
         );
-      }
-
-      if (images.length > 1 && event.key === "ArrowRight") {
+      } else if (images.length > 1 && event.key === "ArrowRight") {
         event.preventDefault();
         setActiveImageIndex((current) =>
           current === images.length - 1 ? 0 : current + 1
@@ -52,68 +86,112 @@ function ProjectImageGallery({ project }) {
     }
 
     window.addEventListener("keydown", handleKeyDown);
-
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [isViewerOpen, images.length]);
 
-  if (images.length === 0) {
-    return null;
-  }
+  if (images.length === 0) return null;
 
-  const previousImage = () => {
+  const previousImage = () =>
     setActiveImageIndex((current) =>
       current === 0 ? images.length - 1 : current - 1
     );
-  };
-
-  const nextImage = () => {
+  const nextImage = () =>
     setActiveImageIndex((current) =>
       current === images.length - 1 ? 0 : current + 1
     );
-  };
+
+  const activeUrl = images[activeImageIndex];
+
+  function renderMedia(url, className, enlarged = false) {
+    if (isVideoUrl(url)) {
+      return (
+        <video
+          key={url}
+          className={className}
+          controls
+          playsInline
+          preload="metadata"
+          aria-label={`${project.title} video`}
+          draggable={false}
+          onClick={(event) => event.stopPropagation()}
+          style={
+            enlarged
+              ? {
+                  maxWidth: "92vw",
+                  maxHeight: "86vh",
+                  width: "auto",
+                  height: "auto",
+                  objectFit: "contain",
+                  display: "block",
+                }
+              : {
+                  width: "100%",
+                  height: "auto",
+                  display: "block",
+                }
+          }
+        >
+          <source src={url} type={getVideoMimeType(url)} />
+          Your browser does not support the video tag.
+        </video>
+      );
+    }
+
+    return (
+      <img
+        key={url}
+        className={className}
+        src={url}
+        alt={`${project.title} — image ${activeImageIndex + 1}`}
+        loading="lazy"
+        draggable={false}
+        role={enlarged ? undefined : "button"}
+        tabIndex={enlarged ? undefined : 0}
+        aria-label={
+          enlarged
+            ? undefined
+            : `Enlarge ${project.title} image ${activeImageIndex + 1}`
+        }
+        onClick={enlarged ? undefined : () => setIsViewerOpen(true)}
+        onKeyDown={
+          enlarged
+            ? undefined
+            : (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setIsViewerOpen(true);
+                }
+              }
+        }
+        style={
+          enlarged
+            ? {
+                maxWidth: "92vw",
+                maxHeight: "86vh",
+                width: "auto",
+                height: "auto",
+              }
+            : { cursor: "zoom-in" }
+        }
+      />
+    );
+  }
 
   return (
     <div className="project-image-gallery">
-      <img
-        className="project-image"
-        src={images[activeImageIndex]}
-        alt={`${project.title} — image ${activeImageIndex + 1}`}
-        loading="lazy"
-        role="button"
-        tabIndex={0}
-        aria-label={`Enlarge ${project.title} image ${activeImageIndex + 1}`}
-        onClick={() => setIsViewerOpen(true)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            setIsViewerOpen(true);
-          }
-        }}
-        style={{ cursor: "zoom-in" }}
-      />
-
+      {renderMedia(activeUrl, "project-image")}
       {images.length > 1 && (
         <div className="gallery-controls">
-          <button
-            type="button"
-            onClick={previousImage}
-            aria-label="Previous image"
-          >
+          <button type="button" onClick={previousImage} aria-label="Previous media">
             ← Previous
           </button>
-
           <span>
             {activeImageIndex + 1} / {images.length}
           </span>
-
-          <button
-            type="button"
-            onClick={nextImage}
-            aria-label="Next image"
-          >
+          <button type="button" onClick={nextImage} aria-label="Next media">
             Next →
           </button>
         </div>
@@ -125,11 +203,9 @@ function ProjectImageGallery({ project }) {
             className="image-lightbox"
             role="dialog"
             aria-modal="true"
-            aria-label={`${project.title} image viewer`}
+            aria-label={`${project.title} media viewer`}
             onClick={(event) => {
-              if (event.target === event.currentTarget) {
-                setIsViewerOpen(false);
-              }
+              if (event.target === event.currentTarget) setIsViewerOpen(false);
             }}
           >
             <button
@@ -137,7 +213,7 @@ function ProjectImageGallery({ project }) {
               type="button"
               className="lightbox-close"
               onClick={() => setIsViewerOpen(false)}
-              aria-label="Close enlarged image"
+              aria-label="Close enlarged media"
             >
               ×
             </button>
@@ -147,26 +223,20 @@ function ProjectImageGallery({ project }) {
                 type="button"
                 className="lightbox-prev"
                 onClick={previousImage}
-                aria-label="Previous image"
+                aria-label="Previous media"
               >
                 ‹
               </button>
             )}
 
-            <img
-              className="lightbox-image"
-              src={images[activeImageIndex]}
-              alt={`${project.title} — enlarged image ${
-                activeImageIndex + 1
-              } of ${images.length}`}
-            />
+            {renderMedia(activeUrl, "lightbox-image", true)}
 
             {images.length > 1 && (
               <button
                 type="button"
                 className="lightbox-next"
                 onClick={nextImage}
-                aria-label="Next image"
+                aria-label="Next media"
               >
                 ›
               </button>
@@ -222,14 +292,13 @@ function App() {
     category: project.category,
     description: project.description || "",
     label: project.category?.toUpperCase() || "PROJECT",
-    image: project.image_urls?.[0] || "",
+    image: (project.image_urls || []).find((url) => !isVideoUrl(url)) || "",
     images: project.image_urls || [],
   }));
 
   const filteredProjects = allProjects.filter((project) => {
     const matchesCategory =
-      activeCategory === "All Work" ||
-      project.category === activeCategory;
+      activeCategory === "All Work" || project.category === activeCategory;
 
     const searchText = [
       project.title,
@@ -240,9 +309,7 @@ function App() {
       .join(" ")
       .toLowerCase();
 
-    const matchesSearch = searchText.includes(
-      search.trim().toLowerCase()
-    );
+    const matchesSearch = searchText.includes(search.trim().toLowerCase());
 
     return matchesCategory && matchesSearch;
   });
@@ -255,7 +322,6 @@ function App() {
 
   return (
     <div className="portfolio">
-      {/* HEADER */}
       <header className="site-header">
         <a className="brand" href="#home" aria-label="ASHIQ home">
           <span className="brand-mark">A.</span>
@@ -274,7 +340,6 @@ function App() {
       </header>
 
       <main>
-        {/* HERO */}
         <section className="hero" id="home">
           <div className="hero-content">
             <div className="availability">
@@ -282,9 +347,7 @@ function App() {
               OPEN TO OPPORTUNITIES
             </div>
 
-            <p className="eyebrow">
-              CREATIVE WORK. SMART SOLUTIONS.
-            </p>
+            <p className="eyebrow">CREATIVE WORK. SMART SOLUTIONS.</p>
 
             <h1>
               Turning ideas into
@@ -293,17 +356,13 @@ function App() {
             </h1>
 
             <p className="hero-description">
-              I help businesses create professional designs, organised
-              spreadsheets, and reliable business documents. My focus
-              is on creativity, accuracy, and work that serves a clear
-              purpose.
+              I help businesses create professional designs, organised spreadsheets,
+              and reliable business documents. My focus is on creativity,
+              accuracy, and work that serves a clear purpose.
             </p>
 
             <div className="hero-actions">
-              <button
-                className="primary-button"
-                onClick={scrollToWork}
-              >
+              <button className="primary-button" onClick={scrollToWork}>
                 Explore My Work <span>↗</span>
               </button>
 
@@ -319,9 +378,7 @@ function App() {
               </div>
 
               <div>
-                <strong>
-                  {publishedProjects.length.toString().padStart(2, "0")}
-                </strong>
+                <strong>{publishedProjects.length.toString().padStart(2, "0")}</strong>
                 <span>Portfolio Projects</span>
               </div>
 
@@ -357,9 +414,7 @@ function App() {
                   MATTER.
                 </h2>
                 <div className="art-circle"></div>
-                <span className="art-bottom">
-                  CREATIVITY MEETS PRECISION
-                </span>
+                <span className="art-bottom">CREATIVITY MEETS PRECISION</span>
               </div>
 
               <div className="showcase-footer">
@@ -390,14 +445,12 @@ function App() {
           </div>
         </section>
 
-        {/* SERVICES */}
         <section className="services-section" id="services">
           <div className="section-heading">
             <p className="eyebrow">WHAT I CAN DO</p>
             <h2>Skills that bring value.</h2>
             <p>
-              A combination of creativity, organisation, and practical
-              digital skills.
+              A combination of creativity, organisation, and practical digital skills.
             </p>
           </div>
 
@@ -406,32 +459,20 @@ function App() {
               <div className="service-icon design-icon">✳</div>
               <h3>Graphic Design</h3>
               <p>
-                Menus, promotional posters, sale flyers, and social
-                media graphics.
+                Menus, promotional posters, sale flyers, and social media graphics.
               </p>
-              <a
-                href="#work"
-                onClick={() =>
-                  setActiveCategory("Graphic Design")
-                }
-              >
+              <a href="#work" onClick={() => setActiveCategory("Graphic Design")}>
                 View design work ↗
               </a>
             </article>
 
             <article className="service-card">
-              <div className="service-icon excel-service-icon">
-                ▦
-              </div>
+              <div className="service-icon excel-service-icon">▦</div>
               <h3>Excel & Data</h3>
               <p>
-                XLOOKUP, PivotTables, data organisation, reports,
-                and dashboards.
+                XLOOKUP, PivotTables, data organisation, reports, and dashboards.
               </p>
-              <a
-                href="#work"
-                onClick={() => setActiveCategory("Excel & Data")}
-              >
+              <a href="#work" onClick={() => setActiveCategory("Excel & Data")}>
                 View data work ↗
               </a>
             </article>
@@ -440,8 +481,8 @@ function App() {
               <div className="service-icon accounts-icon">₹</div>
               <h3>Tally & Accounts</h3>
               <p>
-                Bookkeeping support, invoice preparation, and
-                organised accounting records.
+                Bookkeeping support, invoice preparation, and organised accounting
+                records.
               </p>
               <a href="#contact">Discuss accounting work ↗</a>
             </article>
@@ -450,22 +491,16 @@ function App() {
               <div className="service-icon word-icon">W</div>
               <h3>Word Documents</h3>
               <p>
-                Professional reports, formatted documents, and
-                organised business content.
+                Professional reports, formatted documents, and organised business
+                content.
               </p>
-              <a
-                href="#work"
-                onClick={() =>
-                  setActiveCategory("Word Documents")
-                }
-              >
+              <a href="#work" onClick={() => setActiveCategory("Word Documents")}>
                 View document work ↗
               </a>
             </article>
           </div>
         </section>
 
-        {/* PORTFOLIO */}
         <section className="work-section" id="work">
           <div className="work-heading">
             <div>
@@ -477,9 +512,7 @@ function App() {
             </div>
 
             <div className="project-count">
-              <strong>
-                {filteredProjects.length.toString().padStart(2, "0")}
-              </strong>
+              <strong>{filteredProjects.length.toString().padStart(2, "0")}</strong>
               <span>PROJECTS</span>
             </div>
           </div>
@@ -553,8 +586,7 @@ function App() {
                           lineHeight: 1.7,
                         }}
                       >
-                        {project.description ||
-                          "No preview image uploaded yet."}
+                        {project.description || "No preview image uploaded yet."}
                       </p>
                     </div>
                   )}
@@ -562,12 +594,8 @@ function App() {
 
                 <div className="project-info">
                   <div>
-                    <span className="project-category">
-                      {project.category}
-                    </span>
-
+                    <span className="project-category">{project.category}</span>
                     <h3>{project.title}</h3>
-
                     <p>{project.description}</p>
                   </div>
 
@@ -582,9 +610,7 @@ function App() {
           {filteredProjects.length === 0 && (
             <div className="empty-state">
               <h3>No projects found</h3>
-              <p>
-                Try a different search or select another category.
-              </p>
+              <p>Try a different search or select another category.</p>
 
               <button
                 className="primary-button"
@@ -599,12 +625,11 @@ function App() {
           )}
 
           <p className="demo-note">
-            Some portfolio visuals are illustrative demonstrations.
-            Sample figures are not verified business records.
+            Some portfolio visuals are illustrative demonstrations. Sample figures
+            are not verified business records.
           </p>
         </section>
 
-        {/* ABOUT */}
         <section className="about-section" id="about">
           <div className="about-mark">A.</div>
 
@@ -618,11 +643,9 @@ function App() {
             </h2>
 
             <p>
-              I help businesses create professional designs,
-              organised spreadsheets, and reliable business
-              documents. I enjoy combining creativity with
-              technology and value clarity, accuracy, and attention
-              to detail.
+              I help businesses create professional designs, organised spreadsheets,
+              and reliable business documents. I enjoy combining creativity with
+              technology and value clarity, accuracy, and attention to detail.
             </p>
 
             <a className="text-link" href="#contact">
@@ -651,7 +674,6 @@ function App() {
           </div>
         </section>
 
-        {/* CONTACT */}
         <section className="contact-section" id="contact">
           <div className="contact-content">
             <p className="eyebrow">HAVE A PROJECT IN MIND?</p>
@@ -663,9 +685,8 @@ function App() {
             </h2>
 
             <p>
-              Have a design, spreadsheet, accounting, or document
-              project in mind? Get in touch to discuss your
-              requirements.
+              Have a design, spreadsheet, accounting, or document project in mind?
+              Get in touch to discuss your requirements.
             </p>
 
             <a
@@ -675,9 +696,7 @@ function App() {
               Email Me <span>↗</span>
             </a>
 
-            <p className="email-note">
-              Contact me at spreedow@gmail.com
-            </p>
+            <p className="email-note">Contact me at spreedow@gmail.com</p>
           </div>
 
           <div className="contact-decoration">
@@ -693,7 +712,6 @@ function App() {
         </section>
       </main>
 
-      {/* FOOTER */}
       <footer className="site-footer">
         <a className="brand footer-brand" href="#home">
           <span className="brand-mark">A.</span>

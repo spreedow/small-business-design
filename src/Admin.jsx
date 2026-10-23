@@ -11,6 +11,17 @@ const CATEGORIES = [
   "Word Documents",
 ];
 
+const MAX_IMAGE_SIZE = 8 * 1024 * 1024;
+const MAX_VIDEO_SIZE = 50 * 1024 * 1024;
+
+const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const ALLOWED_VIDEO_TYPES = [
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "video/ogg",
+];
+
 const styles = {
   page: {
     minHeight: "100vh",
@@ -101,6 +112,91 @@ const styles = {
   },
 };
 
+const VIDEO_EXTENSIONS = [".mp4", ".webm", ".ogg", ".mov", ".m4v"];
+
+function isVideoUrl(url) {
+  if (typeof url !== "string" || !url.trim()) return false;
+  const cleanUrl = url.trim().split("#")[0].split("?")[0].toLowerCase();
+  return VIDEO_EXTENSIONS.some((ext) => cleanUrl.endsWith(ext));
+}
+
+function getVideoMimeType(url) {
+  const cleanUrl = typeof url === "string" ? url.trim().split("#")[0].split("?")[0].toLowerCase() : "";
+
+  if (cleanUrl.endsWith(".webm")) return "video/webm";
+  if (cleanUrl.endsWith(".ogg") || cleanUrl.endsWith(".ogv")) return "video/ogg";
+  if (cleanUrl.endsWith(".mov")) return "video/quicktime";
+  return "video/mp4";
+}
+
+function getStoragePathFromUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const marker = `/object/public/${BUCKET}/`;
+    const index = parsed.pathname.indexOf(marker);
+
+    if (index === -1) return null;
+
+    return decodeURIComponent(parsed.pathname.slice(index + marker.length));
+  } catch {
+    return null;
+  }
+}
+
+function createExistingImageItems(urls) {
+  return (urls ?? []).map((url) => ({
+    id: `existing-${url}`,
+    type: "existing",
+    url,
+    mediaType: isVideoUrl(url) ? "video" : "image",
+  }));
+}
+
+function isVideoItem(item) {
+  if (!item) return false;
+  if (item.mediaType) return item.mediaType === "video";
+  if (item.type === "new") return item.file?.type?.startsWith("video/");
+  const url = item.type === "existing" ? item.url : item.previewUrl;
+  return isVideoUrl(url);
+}
+
+function MediaPreview({ url, title, index, isVideo }) {
+  const baseStyle = {
+    width: "100%",
+    height: "130px",
+    objectFit: "cover",
+    display: "block",
+    background: "#000",
+  };
+
+  if (isVideo) {
+    return (
+      <video
+        src={url}
+        controls
+        playsInline
+        preload="metadata"
+        draggable={false}
+        aria-label={`${title} video ${index + 1}`}
+        style={baseStyle}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <source src={url} type={getVideoMimeType(url)} />
+      </video>
+    );
+  }
+
+  return (
+    <img
+      src={url}
+      alt={`${title} preview ${index + 1}`}
+      loading="lazy"
+      draggable={false}
+      style={baseStyle}
+    />
+  );
+}
+
 export default function Admin() {
   const [user, setUser] = useState(null);
   const [checkingSession, setCheckingSession] = useState(true);
@@ -119,12 +215,19 @@ export default function Admin() {
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("Graphic Design");
   const [description, setDescription] = useState("");
-  const [images, setImages] = useState([]);
 
-  const fileInputRef = useRef(null);
+  const [imageItems, setImageItems] = useState([]);
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [originalImageUrls, setOriginalImageUrls] = useState([]);
-  const [currentImageUrls, setCurrentImageUrls] = useState([]);
+  const [draggedIndex, setDraggedIndex] = useState(null);
+  const [dragOverIndex, setDragOverIndex] = useState(null);
+
+  const fileInputRef = useRef(null);
+  const imageItemsRef = useRef([]);
+
+  useEffect(() => {
+    imageItemsRef.current = imageItems;
+  }, [imageItems]);
 
   useEffect(() => {
     let active = true;
@@ -172,6 +275,16 @@ export default function Admin() {
   }, []);
 
   useEffect(() => {
+    return () => {
+      imageItemsRef.current.forEach((item) => {
+        if (item?.type === "new" && item.previewUrl) {
+          URL.revokeObjectURL(item.previewUrl);
+        }
+      });
+    };
+  }, []);
+
+  useEffect(() => {
     if (user?.email?.toLowerCase() === ADMIN_EMAIL) {
       loadProjects();
     }
@@ -197,10 +310,19 @@ export default function Admin() {
     setTitle("");
     setCategory("Graphic Design");
     setDescription("");
-    setImages([]);
     setEditingProjectId(null);
     setOriginalImageUrls([]);
-    setCurrentImageUrls([]);
+    setDraggedIndex(null);
+
+    setImageItems((current) => {
+      current.forEach((item) => {
+        if (item?.type === "new" && item.previewUrl) {
+          URL.revokeObjectURL(item.previewUrl);
+        }
+      });
+
+      return [];
+    });
 
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -216,8 +338,8 @@ export default function Admin() {
     setCategory(project.category || "Graphic Design");
     setDescription(project.description || "");
     setOriginalImageUrls(project.image_urls ?? []);
-    setCurrentImageUrls(project.image_urls ?? []);
-    setImages([]);
+    setImageItems(createExistingImageItems(project.image_urls ?? []));
+    setDraggedIndex(null);
 
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -231,18 +353,146 @@ export default function Admin() {
     setMessage("Edit cancelled.");
   }
 
-  function getStoragePathFromUrl(url) {
-    try {
-      const parsed = new URL(url);
-      const marker = `/object/public/${BUCKET}/`;
-      const index = parsed.pathname.indexOf(marker);
+  function handleImageUpload(event) {
+    const files = Array.from(event.target.files ?? []);
+    if (files.length === 0) return;
 
-      if (index === -1) return null;
+    const nextItems = files.map((file) => ({
+      id: crypto.randomUUID(),
+      type: "new",
+      file,
+      previewUrl: URL.createObjectURL(file),
+      mediaType: file.type.startsWith("video/") ? "video" : "image",
+    }));
 
-      return decodeURIComponent(parsed.pathname.slice(index + marker.length));
-    } catch {
-      return null;
+    setImageItems((current) => [...current, ...nextItems]);
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
     }
+  }
+
+  function handleDragStart(index, event) {
+    const item = imageItemsRef.current[index];
+    if (!item) return;
+
+    setDraggedIndex(index);
+    setDragOverIndex(null);
+
+    if (event?.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", item.id);
+    }
+  }
+
+  function handleDragOver(event, index) {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    setDragOverIndex(index);
+  }
+
+  function handleDragLeave(event) {
+    if (event?.currentTarget?.contains(event?.relatedTarget)) return;
+    setDragOverIndex(null);
+  }
+
+  function handleDrop(dropIndex, event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const draggedId = event?.dataTransfer?.getData("text/plain");
+    const currentItems = imageItemsRef.current;
+    let sourceIndex = draggedId
+      ? currentItems.findIndex((item) => item.id === draggedId)
+      : draggedIndex;
+
+    if (
+      !Number.isInteger(sourceIndex) ||
+      sourceIndex < 0 ||
+      sourceIndex >= currentItems.length
+    ) {
+      setDraggedIndex(null);
+      setDragOverIndex(null);
+      return;
+    }
+
+    const targetIndex = dropIndex < 0 ? 0 : Math.min(dropIndex, currentItems.length - 1);
+
+    if (sourceIndex !== targetIndex) {
+      const next = [...currentItems];
+      const [movedItem] = next.splice(sourceIndex, 1);
+      next.splice(targetIndex, 0, movedItem);
+      imageItemsRef.current = next;
+      setImageItems(next);
+      setMessage(
+        targetIndex === 0
+          ? "Cover media changed. Click Update project to save it."
+          : "Media order changed. Click Update project to save it."
+      );
+      setError("");
+    }
+
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  }
+
+  function setCurrentImageAsCover(index) {
+    const currentItems = imageItemsRef.current;
+    if (!Number.isInteger(index) || index < 0 || index >= currentItems.length) return;
+
+    if (index === 0) {
+      setMessage("This media is already the cover.");
+      setError("");
+      return;
+    }
+
+    const next = [...currentItems];
+    const [selectedImage] = next.splice(index, 1);
+    next.unshift(selectedImage);
+    imageItemsRef.current = next;
+    setImageItems(next);
+    setMessage("Cover selected. Click Update project to save the new cover.");
+    setError("");
+    setDraggedIndex(null);
+    setDragOverIndex(null);
+  }
+
+  function moveCurrentImage(index, direction) {
+    setImageItems((current) => {
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= current.length) return current;
+
+      const next = [...current];
+      const [item] = next.splice(index, 1);
+      next.splice(targetIndex, 0, item);
+      return next;
+    });
+  }
+
+  function removeCurrentImage(index) {
+    setImageItems((current) => {
+      const item = current[index];
+
+      if (item?.type === "new" && item.previewUrl) {
+        URL.revokeObjectURL(item.previewUrl);
+      }
+
+      return current.filter((_, currentIndex) => currentIndex !== index);
+    });
+  }
+
+  function clearCurrentImages() {
+    setImageItems((current) => {
+      current.forEach((item) => {
+        if (item?.type === "new" && item.previewUrl) {
+          URL.revokeObjectURL(item.previewUrl);
+        }
+      });
+
+      return [];
+    });
+
+    setDraggedIndex(null);
   }
 
   async function deleteStorageUrls(urls) {
@@ -268,12 +518,10 @@ export default function Admin() {
       return;
     }
 
-    const { data, error: loginError } = await supabase.auth.signInWithPassword(
-      {
-        email: email.trim(),
-        password,
-      }
-    );
+    const { data, error: loginError } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
 
     if (loginError) {
       setError(loginError.message);
@@ -310,23 +558,30 @@ export default function Admin() {
       return;
     }
 
-    const totalImages = currentImageUrls.length + images.length;
-
-    if (totalImages > 10) {
-      setError("A project can have up to 10 images in total.");
+    if (imageItems.length > 10) {
+      setError("A project can have up to 10 media files in total.");
       return;
     }
 
-    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+    for (const item of imageItems) {
+      if (item.type !== "new") continue;
 
-    for (const file of images) {
-      if (!allowedTypes.includes(file.type)) {
-        setError("Please use JPG, PNG, or WebP images only.");
+      const fileType = item.file.type;
+
+      if (![...ALLOWED_IMAGE_TYPES, ...ALLOWED_VIDEO_TYPES].includes(fileType)) {
+        setError("Please use JPG, PNG, WebP images, or MP4/WebM/MOV/OGG videos only.");
         return;
       }
 
-      if (file.size > 8 * 1024 * 1024) {
-        setError(`The image "${file.name}" is larger than 8 MB.`);
+      const isVideo = item.mediaType === "video";
+      const maxSize = isVideo ? MAX_VIDEO_SIZE : MAX_IMAGE_SIZE;
+
+      if (item.file.size > maxSize) {
+        setError(
+          `The ${isVideo ? "video" : "image"} "${item.file.name}" is larger than ${
+            isVideo ? "50 MB" : "8 MB"
+          }.`
+        );
         return;
       }
     }
@@ -334,36 +589,35 @@ export default function Admin() {
     setSaving(true);
 
     const uploadedPaths = [];
-    const newImageUrls = [];
+    const nextImageUrls = [];
     const projectId = editingProjectId;
 
     try {
-      for (const file of images) {
+      for (const item of imageItems) {
+        if (item.type === "existing") {
+          nextImageUrls.push(item.url);
+          continue;
+        }
+
+        const file = item.file;
         const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
         const path = `${crypto.randomUUID()}-${safeName}`;
 
-        const { error: uploadError } = await supabase.storage
-          .from(BUCKET)
-          .upload(path, file, {
-            cacheControl: "3600",
-            upsert: false,
-            contentType: file.type,
-          });
+        const { error: uploadError } = await supabase.storage.from(BUCKET).upload(path, file, {
+          cacheControl: "3600",
+          upsert: false,
+          contentType: file.type,
+        });
 
         if (uploadError) {
-          throw new Error(`Image upload failed: ${uploadError.message}`);
+          throw new Error(`Media upload failed: ${uploadError.message}`);
         }
 
         uploadedPaths.push(path);
 
-        const { data: publicData } = supabase.storage
-          .from(BUCKET)
-          .getPublicUrl(path);
-
-        newImageUrls.push(publicData.publicUrl);
+        const { data: publicData } = supabase.storage.from(BUCKET).getPublicUrl(path);
+        nextImageUrls.push(publicData.publicUrl);
       }
-
-      const nextImageUrls = [...currentImageUrls, ...newImageUrls];
 
       if (projectId) {
         const { data: updatedProject, error: updateError } = await supabase
@@ -396,7 +650,7 @@ export default function Admin() {
 
           if (storageError) {
             setMessage(
-              "Project updated, but some removed images could not be deleted from storage."
+              "Project updated, but some removed media files could not be deleted from storage."
             );
           } else {
             setMessage("Project updated successfully.");
@@ -437,7 +691,7 @@ export default function Admin() {
           .remove(uploadedPaths);
 
         if (cleanupError) {
-          console.error("Uploaded image cleanup failed:", cleanupError);
+          console.error("Uploaded media cleanup failed:", cleanupError);
         }
       }
     } finally {
@@ -467,9 +721,7 @@ export default function Admin() {
       );
 
       setMessage(
-        nextPublishedState
-          ? "Project published."
-          : "Project returned to draft."
+        nextPublishedState ? "Project published." : "Project returned to draft."
       );
     }
 
@@ -505,19 +757,7 @@ export default function Admin() {
     setProjects((current) => current.filter((item) => item.id !== project.id));
 
     const paths = (project.image_urls ?? [])
-      .map((url) => {
-        try {
-          const parsed = new URL(url);
-          const marker = `/object/public/${BUCKET}/`;
-          const index = parsed.pathname.indexOf(marker);
-
-          if (index === -1) return null;
-
-          return decodeURIComponent(parsed.pathname.slice(index + marker.length));
-        } catch {
-          return null;
-        }
-      })
+      .map(getStoragePathFromUrl)
       .filter(Boolean);
 
     if (paths.length > 0) {
@@ -526,11 +766,9 @@ export default function Admin() {
         .remove(paths);
 
       if (storageError) {
-        setMessage(
-          "Project deleted, but some images could not be removed from storage."
-        );
+        setMessage("Project deleted, but some media files could not be removed from storage.");
       } else {
-        setMessage("Project and its images deleted.");
+        setMessage("Project and its media deleted.");
       }
     } else {
       setMessage("Project deleted.");
@@ -578,14 +816,12 @@ export default function Admin() {
           }}
         >
           <div style={styles.card}>
-            <p style={{ ...styles.muted, letterSpacing: "2px" }}>
-              PRIVATE WORKSPACE
-            </p>
+            <p style={{ ...styles.muted, letterSpacing: "2px" }}>PRIVATE WORKSPACE</p>
 
             <h1 style={{ marginBottom: "8px" }}>Portfolio Admin</h1>
 
             <p style={styles.muted}>
-              Sign in to manage your portfolio projects and preview images.
+              Sign in to manage your portfolio projects and preview media.
             </p>
 
             {error && <div style={styles.error}>{error}</div>}
@@ -653,9 +889,7 @@ export default function Admin() {
           }}
         >
           <div>
-            <p style={{ ...styles.muted, letterSpacing: "2px" }}>
-              PRIVATE WORKSPACE
-            </p>
+            <p style={{ ...styles.muted, letterSpacing: "2px" }}>PRIVATE WORKSPACE</p>
 
             <h1 style={{ margin: "8px 0" }}>Portfolio Dashboard</h1>
 
@@ -688,7 +922,7 @@ export default function Admin() {
 
           <p style={styles.muted}>
             New projects start as drafts. You can publish them after checking
-            their details and images.
+            their details and media.
           </p>
 
           <form onSubmit={handleSaveProject}>
@@ -741,88 +975,222 @@ export default function Admin() {
             />
 
             <label htmlFor="project-images" style={styles.label}>
-              Preview images
+              Preview media
             </label>
 
             <input
               id="project-images"
               ref={fileInputRef}
               type="file"
-              accept="image/jpeg,image/png,image/webp"
+              accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime,video/ogg"
               multiple
               style={styles.input}
-              onChange={(event) => {
-                setImages(Array.from(event.target.files ?? []));
-              }}
+              onChange={handleImageUpload}
             />
 
-            {editingProjectId && currentImageUrls.length > 0 && (
-              <div style={{ marginTop: "14px" }}>
-                <p style={styles.muted}>Current images</p>
+            <p style={styles.muted}>
+              Select up to 10 JPG, PNG, WebP images, or MP4/WebM/MOV/OGG videos.
+              Drag the cards below to reorder them. The first media item becomes
+              the cover on the public site.
+            </p>
+
+            {imageItems.length > 0 && (
+              <div style={{ marginTop: "16px", marginBottom: "16px" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "12px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <label style={styles.label}>Manage & Reorder Media</label>
+
+                  <button
+                    type="button"
+                    style={styles.dangerButton}
+                    onClick={clearCurrentImages}
+                  >
+                    Remove all current media
+                  </button>
+                </div>
+
+                <p style={{ ...styles.muted, marginBottom: "12px" }}>
+                  🖱️ Drag and drop any media item to change its position, or click{" "}
+                  <strong>Set as Cover</strong>.
+                </p>
+
+                <div
+                  onDragOver={(event) => handleDragOver(event, -1)}
+                  onDragLeave={handleDragLeave}
+                  onDrop={(event) => handleDrop(0, event)}
+                  style={{
+                    padding: "12px 14px",
+                    marginBottom: "12px",
+                    borderRadius: "10px",
+                    border:
+                      dragOverIndex === -1
+                        ? "2px solid #315c42"
+                        : "1px dashed #b8c8ba",
+                    background: dragOverIndex === -1 ? "#edf5ec" : "#fafaf7",
+                    color: "#315c42",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    textAlign: "center",
+                  }}
+                >
+                  Drop here to make this image the cover
+                </div>
 
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "repeat(auto-fill, minmax(120px, 1fr))",
-                    gap: "10px",
-                    marginBottom: "12px",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+                    gap: "12px",
                   }}
                 >
-                  {currentImageUrls.map((url, index) => (
-                    <div key={`${url}-${index}`} style={{ position: "relative" }}>
-                      <img
-                        src={url}
-                        alt={`${title} preview ${index + 1}`}
-                        style={{
-                          width: "100%",
-                          height: "120px",
-                          objectFit: "cover",
-                          borderRadius: "8px",
-                          border: "1px solid #e2e8df",
-                        }}
-                      />
+                  {imageItems.map((item, index) => {
+                    const isCover = index === 0;
+                    const isDragging = draggedIndex === index;
+                    const isDropTarget = dragOverIndex === index;
+                    const imageUrl =
+                      item.type === "existing" ? item.url : item.previewUrl;
+                    const isVideo = isVideoItem(item);
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCurrentImageUrls((current) =>
-                            current.filter((_, currentIndex) => currentIndex !== index)
-                          );
+                    return (
+                      <div
+                        key={item.id}
+                        draggable
+                        onDragStart={(event) => handleDragStart(index, event)}
+                        onDragOver={(event) => handleDragOver(event, index)}
+                        onDragLeave={handleDragLeave}
+                        onDrop={(event) => handleDrop(index, event)}
+                        onDragEnd={() => {
+                          setDraggedIndex(null);
+                          setDragOverIndex(null);
                         }}
                         style={{
-                          ...styles.dangerButton,
-                          position: "absolute",
-                          top: "8px",
-                          right: "8px",
-                          padding: "7px 10px",
+                          position: "relative",
+                          border: isCover
+                            ? "2px solid #315c42"
+                            : isDropTarget
+                              ? "2px dashed #315c42"
+                              : "1px solid #d7dfd4",
+                          borderRadius: "10px",
+                          overflow: "hidden",
+                          background: isCover ? "#f2f7f3" : "#fff",
+                          boxShadow: isCover
+                            ? "0 4px 12px rgba(49, 92, 66, 0.15)"
+                            : "0 2px 6px rgba(0, 0, 0, 0.04)",
+                          opacity: isDragging ? 0.4 : 1,
+                          cursor: "grab",
                         }}
                       >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
+                        <div
+                          style={{
+                            position: "absolute",
+                            top: "8px",
+                            left: "8px",
+                            zIndex: 2,
+                            padding: "3px 8px",
+                            borderRadius: "6px",
+                            background: isCover ? "#315c42" : "rgba(36, 55, 43, 0.75)",
+                            color: "#fff",
+                            fontSize: "11px",
+                            fontWeight: "700",
+                            letterSpacing: "0.5px",
+                          }}
+                        >
+                          {isCover ? "★ #1 COVER" : `#${index + 1}`}
+                        </div>
+
+                        <MediaPreview
+                          url={imageUrl}
+                          title={title || "Media"}
+                          index={index}
+                          isVideo={isVideo}
+                        />
+
+                        <div
+                          style={{
+                            padding: "8px",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: "6px",
+                            background: isCover ? "#e8efe9" : "#fafaf7",
+                            borderTop: "1px solid #e2e8df",
+                          }}
+                        >
+                          {!isCover && (
+                            <button
+                              type="button"
+                              style={{
+                                ...styles.secondaryButton,
+                                padding: "5px 8px",
+                                fontSize: "11px",
+                                fontWeight: "700",
+                                color: "#315c42",
+                                borderColor: "#315c42",
+                              }}
+                              onPointerDown={(event) => event.stopPropagation()}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setCurrentImageAsCover(index);
+                              }}
+                            >
+                              ★ Set as Cover
+                            </button>
+                          )}
+
+                          <div style={{ display: "flex", gap: "4px" }}>
+                            <button
+                              type="button"
+                              style={{
+                                ...styles.secondaryButton,
+                                flex: 1,
+                                padding: "4px",
+                                fontSize: "12px",
+                              }}
+                              onClick={() => moveCurrentImage(index, -1)}
+                              disabled={index === 0}
+                            >
+                              ←
+                            </button>
+
+                            <button
+                              type="button"
+                              style={{
+                                ...styles.secondaryButton,
+                                flex: 1,
+                                padding: "4px",
+                                fontSize: "12px",
+                              }}
+                              onClick={() => moveCurrentImage(index, 1)}
+                              disabled={index === imageItems.length - 1}
+                            >
+                              →
+                            </button>
+
+                            <button
+                              type="button"
+                              style={{
+                                ...styles.dangerButton,
+                                padding: "4px 8px",
+                                fontSize: "12px",
+                              }}
+                              onClick={() => removeCurrentImage(index)}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-
-                <button
-                  type="button"
-                  style={styles.secondaryButton}
-                  onClick={() => setCurrentImageUrls([])}
-                >
-                  Remove all current images
-                </button>
               </div>
-            )}
-
-            <p style={styles.muted}>
-              Select up to 10 JPG, PNG, or WebP images. Each image must be 8 MB
-              or smaller. Only upload images suitable for public viewing.
-            </p>
-
-            {images.length > 0 && (
-              <p style={styles.muted}>
-                {images.length} image(s) selected:{" "}
-                {images.map((file) => file.name).join(", ")}
-              </p>
             )}
 
             <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
@@ -862,7 +1230,6 @@ export default function Admin() {
           >
             <div>
               <h2 style={{ margin: "0 0 6px" }}>Your Projects</h2>
-
               <p style={styles.muted}>
                 {projects.length} project(s) in your dashboard
               </p>
@@ -935,19 +1302,21 @@ export default function Admin() {
                         }}
                       >
                         {project.image_urls.map((url, index) => (
-                          <img
+                          <div
                             key={`${url}-${index}`}
-                            src={url}
-                            alt={`${project.title} preview ${index + 1}`}
-                            loading="lazy"
                             style={{
-                              width: "100%",
-                              height: "120px",
-                              objectFit: "cover",
                               borderRadius: "8px",
+                              overflow: "hidden",
                               border: "1px solid #e2e8df",
                             }}
-                          />
+                          >
+                            <MediaPreview
+                              url={url}
+                              title={project.title}
+                              index={index}
+                              isVideo={isVideoUrl(url)}
+                            />
+                          </div>
                         ))}
                       </div>
                     )}
